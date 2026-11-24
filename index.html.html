@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>¿Quién compuso esto?</title>
+<style>
+  :root { --bg:#f6f3ee; --card:#fff; --ink:#222; --muted:#777; --accent:#7a3b2e; --ok:#2e7d4f; --bad:#b3372f; --line:#ddd6cb; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#17151a; --card:#221f27; --ink:#eee; --muted:#9a95a3; --accent:#d98f7c; --ok:#5fc08a; --bad:#e8776f; --line:#38333f; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:Georgia, 'Times New Roman', serif; background:var(--bg); color:var(--ink); display:flex; justify-content:center; padding:24px 16px; }
+  main { width:100%; max-width:520px; }
+  h1 { font-size:1.6rem; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 20px; font-size:.95rem; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:20px; }
+  .modes { display:grid; gap:10px; margin-top:12px; }
+  button { font:inherit; cursor:pointer; border:1px solid var(--line); background:var(--card); color:var(--ink); border-radius:10px; padding:12px 14px; text-align:left; }
+  button:hover:not(:disabled) { border-color:var(--accent); }
+  button:disabled { cursor:default; }
+  .primary { background:var(--accent); color:#fff; border-color:var(--accent); text-align:center; }
+  .top { display:flex; justify-content:space-between; color:var(--muted); font-size:.9rem; margin-bottom:14px; }
+  .player { display:flex; align-items:center; gap:12px; margin-bottom:16px; }
+  .player .primary { width:64px; height:64px; border-radius:50%; font-size:1.4rem; padding:0; }
+  .bar { flex:1; height:6px; background:var(--line); border-radius:3px; overflow:hidden; }
+  .bar i { display:block; height:100%; width:0; background:var(--accent); }
+  .opts { display:grid; gap:10px; }
+  .opts small { color:var(--muted); }
+  .opts button.ok { border-color:var(--ok); background:color-mix(in srgb, var(--ok) 18%, var(--card)); }
+  .opts button.bad { border-color:var(--bad); background:color-mix(in srgb, var(--bad) 18%, var(--card)); }
+  .reveal { margin-top:14px; padding-top:14px; border-top:1px solid var(--line); font-size:.95rem; line-height:1.5; }
+  .reveal .primary { width:100%; margin-top:12px; }
+  .msg { color:var(--bad); font-size:.9rem; margin:0 0 10px; }
+  .big { font-size:2.4rem; text-align:center; margin:8px 0; }
+  .rango { display:flex; gap:12px; margin-top:12px; flex-wrap:wrap; }
+  .rango label { display:flex; align-items:center; gap:6px; font-size:.95rem; }
+  select { font:inherit; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--ink); }
+  button:disabled { opacity:.5; }
+  .fila { display:flex; justify-content:space-between; }
+  .link { border:0; background:none; padding:0 0 12px; color:var(--muted); font-size:.9rem; }
+  .link:hover:not(:disabled) { color:var(--accent); }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="titulo">Adivina la música</h1>
+  <p class="sub">Escucha el fragmento y adivina. Audio de Wikimedia Commons.</p>
+
+  <section id="menu" class="card">
+    <strong>Elige un modo de juego</strong>
+    <div class="rango">
+      <label>Desde <select id="desde"></select></label>
+      <label>Hasta <select id="hasta"></select></label>
+    </div>
+    <p id="avisoRango" class="sub" style="margin:6px 0 0"></p>
+    <p id="estado" class="sub" style="margin:6px 0 0"></p>
+    <details class="sub" style="margin-top:10px"><summary>Obras reportadas (<span id="nrep">0</span>)</summary>
+      <textarea id="listaRep" readonly rows="5" style="width:100%;margin-top:8px;font:inherit;font-size:.85rem"></textarea>
+      <button id="borrarRep" class="link" type="button">Borrar reportes</button>
+    </details>
+    <div class="modes">
+      <button data-mode="periodo">🎼 Adivinar el periodo / estilo<br><small>Elige entre los periodos del rango</small></button>
+      <button data-mode="compositor">👤 Adivinar el compositor<br><small>Una correcta entre cuatro</small></button>
+      <button data-mode="obra">🎵 Adivinar la obra exacta<br><small>Una correcta entre cuatro</small></button>
+    </div>
+  </section>
+
+  <section id="game" class="card hidden">
+    <div class="fila"><button id="back" class="link">← Volver</button><button id="report" class="link">⚠ Reportar obra</button></div>
+    <div class="top"><span id="progress"></span><span id="score"></span></div>
+    <div class="player">
+      <button class="primary" id="play" aria-label="Reproducir">▶</button>
+      <div class="bar"><i id="fill"></i></div>
+    </div>
+    <p class="msg hidden" id="err"></p>
+    <div class="opts" id="opts"></div>
+    <div class="reveal hidden" id="reveal"></div>
+  </section>
+
+  <section id="end" class="card hidden">
+    <div class="big" id="final"></div>
+    <p id="finalTxt" style="text-align:center"></p>
+    <button class="primary" id="again" style="width:100%">Jugar de nuevo</button>
+  </section>
+</main>
+<audio id="audio" preload="metadata"></audio>
+
+<script>
+// ---------- DATOS ----------
+// file = nombre exacto en Commons (verificado). Sin file, o si falla, se busca con q en la API de Commons
+// y se acepta solo un resultado cuyo título coincida con "must".
+const OBRAS = [
+  // Barroco (file = nombre exacto confirmado en Commons)
+  { c:"Claudio Monteverdi", obra:"L'Orfeo: Toccata", p:"Barroco", file:"Orfeo - Toccata.ogg", q:"Monteverdi Orfeo Toccata", must:/orfeo|monteverdi/i },
+  { c:"J. S. Bach", obra:"Concierto de Brandeburgo n.º 3, III. Allegro", p:"Barroco", file:"Bach - Brandenburg Concerto No. 3 - 3. Allegro.ogg", q:"Bach Brandenburg Concerto 3", must:/bach/i },
+  { c:"J. S. Bach", obra:"Concierto de Brandeburgo n.º 5, I. Allegro", p:"Barroco", file:"Bach - Brandenburg Concerto 5 - 1. Allegro.ogg", q:"Bach Brandenburg Concerto 5", must:/bach/i },
+  { c:"J. S. Bach", obra:"Concierto de Brandeburgo n.º 6, III. Allegro", p:"Barroco", file:"Bach - Brandenburg Concerto 6 - 3. Allegro.ogg", q:"Bach Brandenburg Concerto 6", must:/bach/i },
+  { c:"J. S. Bach", obra:"Partita para flauta sola en La menor, BWV 1013", p:"Barroco", file:"Jsbach BWV 1013.ogg", q:"Bach BWV 1013", must:/bwv 1013/i },
+  { c:"Antonio Vivaldi", obra:"Las cuatro estaciones: La primavera, I. Allegro", p:"Barroco", file:"Vivaldi - Four Seasons 1 Spring mvt 1 Allegro - John Harrison violin.oga", q:"Vivaldi Four Seasons Spring", must:/vivaldi/i },
+  { c:"Antonio Vivaldi", obra:"Las cuatro estaciones: El verano, I. Allegro non molto", p:"Barroco", file:"Vivaldi - Four Seasons 2 Summer mvt 1 Allegro non molto - John Harrison violin.oga", q:"Vivaldi Four Seasons Summer", must:/vivaldi/i },
+  { c:"Antonio Vivaldi", obra:"Las cuatro estaciones: El invierno, I. Allegro non molto", p:"Barroco", file:"Vivaldi - Four Seasons 4 Winter mvt 1 Allegro non molto - John Harrison violin.oga", q:"Vivaldi Four Seasons Winter", must:/vivaldi/i },
+  { c:"G. F. Händel", obra:"Water Music", p:"Barroco", q:"Handel Water Music", must:/(handel|händel).*water music|water music.*(handel|händel)/i },
+  // Galante (sin archivo confirmado: se buscan en Commons)
+  { c:"J. C. Bach", obra:"Sinfonía en Sol menor, Op. 6 n.º 6", p:"Galante", q:"Johann Christian Bach Symphony G minor", must:/(christian|j\.? ?c\.?) bach.*(symphony|sinfon)|(symphony|sinfon).*(christian|j\.? ?c\.?) bach/i },
+  { c:"Leopold Mozart", obra:"Paseo en trineo (Schlittenfahrt)", p:"Galante", q:"Leopold Mozart Sleigh Ride", must:/leopold.*(sleigh|schlitten)|(sleigh|schlitten).*leopold/i },
+  { c:"Luigi Boccherini", obra:"Minueto del Quinteto en Mi mayor, Op. 11 n.º 5", p:"Galante", q:"Boccherini Minuet", must:/boccherini.*(minuet|menuet|minueto)|(minuet|menuet).*boccherini/i },
+  { c:"C. P. E. Bach", obra:"Concierto para violonchelo en La mayor, Wq. 172", p:"Galante", q:"Carl Philipp Emanuel Bach cello concerto", must:/(c\.? ?p\.? ?e\.?|emanuel) bach.*(cello|concerto)|(cello|concerto).*(c\.? ?p\.? ?e\.?|emanuel) bach/i },
+  // Clásico
+  { c:"W. A. Mozart", obra:"Eine kleine Nachtmusik, I. Allegro", p:"Clásico", file:"Mozart - Eine kleine Nachtmusik - 1. Allegro.ogg", q:"Mozart Eine kleine Nachtmusik", must:/mozart/i },
+  { c:"W. A. Mozart", obra:"Las bodas de Fígaro: obertura", p:"Clásico", file:"Mozart, The Marriage of Figaro (overture).ogg", q:"Mozart Marriage of Figaro overture", must:/mozart/i },
+  { c:"L. van Beethoven", obra:"Sinfonía n.º 5 en Do menor, Op. 67, IV. Allegro", p:"Clásico", file:"Ludwig van Beethoven - symphony no. 5 in c minor, op. 67 - iv. allegro.ogg", q:"Beethoven Symphony 5", must:/beethoven.*(5|fifth)/i },
+  { c:"L. van Beethoven", obra:"Sinfonía n.º 8 en Fa mayor, Op. 93, IV. Allegro vivace", p:"Clásico", file:"Ludwig van Beethoven - symphony no. 8 in f major, op. 93 - iv. allegro vivace.ogg", q:"Beethoven Symphony 8", must:/beethoven.*8/i },
+  { c:"L. van Beethoven", obra:"Sinfonía n.º 4 en Si bemol mayor, Op. 60, II. Adagio", p:"Clásico", file:"Ludwig van Beethoven - symphony no. 4 in b flat major, op. 60 - ii. adagio.ogg", q:"Beethoven Symphony 4", must:/beethoven.*4/i },
+  { c:"L. van Beethoven", obra:"Concierto para piano n.º 5 «Emperador», Op. 73, I. Allegro", p:"Clásico", file:"Beethoven Op. 73 - 1 Allegro.ogg", q:"Beethoven Op. 73", must:/op\. ?73/i },
+  { c:"W. A. Mozart", obra:"Sinfonía n.º 40 en Sol menor, K. 550", p:"Clásico", q:"Mozart Symphony 40", must:/mozart.*(40|550)|(40|550).*mozart/i },
+  { c:"Joseph Haydn", obra:"Sinfonía n.º 94 «La sorpresa»", p:"Clásico", q:"Haydn Symphony 94 Surprise", must:/haydn.*(94|surprise)|(94|surprise).*haydn/i },
+  { c:"Joseph Haydn", obra:"Concierto para trompeta en Mi bemol mayor", p:"Clásico", q:"Haydn trumpet concerto", must:/haydn.*trumpet|trumpet.*haydn/i },
+  // Renacimiento
+  { c:"Carlo Gesualdo", obra:"Moro lasso al mio duolo (madrigal)", p:"Renacimiento", file:"Gesualdo-moro lasso al mio duolo.ogg", q:"Gesualdo moro lasso", must:/gesualdo/i },
+  { c:"Costanzo Festa", obra:"Afflitti spirti miei (madrigal)", p:"Renacimiento", file:"Festa-afflitti spirti miei.ogg", q:"Festa afflitti spirti miei", must:/festa/i },
+  { c:"Costanzo Festa", obra:"Una donna (madrigal)", p:"Renacimiento", file:"Festa - una donna.ogg", q:"Festa una donna", must:/festa/i },
+  // Romántico
+  { c:"Fryderyk Chopin", obra:"Balada n.º 1 en Sol menor, Op. 23", p:"Romántico", file:"Fryderyk Chopin - Ballade n.1 - Eunmi Ko.ogg", q:"Chopin Ballade 1", must:/chopin.*ballade|ballade.*chopin/i },
+  { c:"Fryderyk Chopin", obra:"Nocturno en Mi bemol mayor, Op. 9 n.º 2", p:"Romántico", file:"Frederic Chopin - Nocturne Eb major Opus 9, number 2.ogg", q:"Chopin Nocturne Opus 9", must:/chopin.*nocturne/i },
+  { c:"Sergéi Rachmaninov", obra:"Concierto para piano n.º 2, Op. 18, I. Moderato", p:"Romántico", file:"Sergei Rachmaninoff - piano concerto no. 2 in c minor, op. 18 - i. moderato.ogg", q:"Rachmaninoff piano concerto 2", must:/rachmaninoff/i },
+  { c:"Franz Liszt", obra:"Concierto para piano n.º 1", p:"Romántico", file:"Liszt 1st concerto1.ogg", q:"Liszt 1st concerto", must:/liszt/i },
+  { c:"Franz Schubert", obra:"Misa en Sol mayor, D. 167: Kyrie", p:"Romántico", file:"Schubert-mass in g. 1. kyrie.ogg", q:"Schubert mass in g kyrie", must:/schubert/i },
+  // Impresionismo
+  { c:"Claude Debussy", obra:"Pour le piano: Sarabande", p:"Impresionismo", file:"Debussy - Sarabande from Pour le piano.ogg", q:"Debussy Sarabande Pour le piano", must:/debussy/i },
+  { c:"Claude Debussy", obra:"La fille aux cheveux de lin", p:"Impresionismo", file:"Claude Debussy - La fille aux cleveux de lin - David Hernando Vitores - Kayoko Morimoto (Wasei Duo).ogg", q:"Debussy La fille aux cheveux de lin", must:/debussy/i },
+  { c:"Erik Satie", obra:"Gymnopédie n.º 1", p:"Impresionismo", file:"Erik Satie - gymnopedies - la 1 ere. lent et douloureux.ogg", q:"Satie Gymnopedie 1", must:/satie/i },
+  { c:"Maurice Ravel", obra:"Pavana para una infanta difunta", p:"Impresionismo", file:"Maurice Ravel - Pavane por une infante defunte - David Hernando Vitores - Kayoko Morimoto (Wasei Duo).ogg", q:"Ravel Pavane infante defunte", must:/ravel/i },
+  // Siglo XX (estos dos están alojados en English Wikipedia, por eso llevan url directa)
+  { c:"Alexander Mosolov", obra:"La fundición de hierro (Zavod)", p:"Siglo XX", url:"https://upload.wikimedia.org/wikipedia/en/9/9c/Mosolov_Iron_Foundry.ogg", sinBusqueda:true },
+  { c:"Anton Webern", obra:"Trío de cuerda, Op. 20: Sehr langsam", p:"Siglo XX", url:"https://upload.wikimedia.org/wikipedia/en/a/a9/Webern_-_Sehr_langsam.ogg", sinBusqueda:true },
+];
+
+// Compositores cuyo audio se busca automáticamente en categorías de Commons
+// (cat = nombre en "Category:Audio files of music by ..."; ap = apellido para limpiar títulos)
+const TABLA = [
+  { c:"J. S. Bach", p:"Barroco", cat:"Johann Sebastian Bach", ap:/bach|js|bwv/i },
+  { c:"G. F. Händel", p:"Barroco", cat:"George Frideric Handel", ap:/handel|händel/i },
+  { c:"Antonio Vivaldi", p:"Barroco", cat:"Antonio Vivaldi", ap:/vivaldi/i },
+  { c:"Henry Purcell", p:"Barroco", cat:"Henry Purcell", ap:/purcell/i },
+  { c:"Arcangelo Corelli", p:"Barroco", cat:"Arcangelo Corelli", ap:/corelli/i },
+  { c:"Domenico Scarlatti", p:"Barroco", cat:"Domenico Scarlatti", ap:/scarlatti/i },
+  { c:"Jean-Philippe Rameau", p:"Barroco", cat:"Jean-Philippe Rameau", ap:/rameau/i },
+  { c:"G. B. Pergolesi", p:"Galante", cat:"Giovanni Battista Pergolesi", ap:/pergolesi/i },
+  { c:"J. C. Bach", p:"Galante", cat:"Johann Christian Bach", ap:/bach/i },
+  { c:"C. P. E. Bach", p:"Galante", cat:"Carl Philipp Emanuel Bach", ap:/bach/i },
+  { c:"Leopold Mozart", p:"Galante", cat:"Leopold Mozart", ap:/mozart/i },
+  { c:"Luigi Boccherini", p:"Galante", cat:"Luigi Boccherini", ap:/boccherini/i },
+  { c:"W. A. Mozart", p:"Clásico", cat:"Wolfgang Amadeus Mozart", ap:/mozart/i },
+  { c:"Joseph Haydn", p:"Clásico", cat:"Joseph Haydn", ap:/haydn/i },
+  { c:"L. van Beethoven", p:"Clásico", cat:"Ludwig van Beethoven", ap:/beethoven/i },
+  { c:"C. W. Gluck", p:"Clásico", cat:"Christoph Willibald Gluck", ap:/gluck/i },
+  { c:"Muzio Clementi", p:"Clásico", cat:"Muzio Clementi", ap:/clementi/i },
+];
+const PERIODOS = ["Renacimiento", "Barroco", "Galante", "Clásico", "Romántico", "Impresionismo", "Siglo XX"]; // orden cronológico
+const TITULOS = { periodo:"¿Qué periodo/estilo es?", compositor:"¿Quién compuso esto?", obra:"¿Qué obra es?" };
+const TITULO_MENU = "Adivina la música";
+const CLIP = 25; // segundos de fragmento
+[ // [nombre, periodo, categoría en Commons, apellido]
+  ["Giovanni da Palestrina","Renacimiento","Giovanni Pierluigi da Palestrina","palestrina"],
+  ["Josquin des Prez","Renacimiento","Josquin des Prez","josquin"],
+  ["Thomas Tallis","Renacimiento","Thomas Tallis","tallis"],
+  ["William Byrd","Renacimiento","William Byrd","byrd"],
+  ["John Dowland","Renacimiento","John Dowland","dowland"],
+  ["Tomás Luis de Victoria","Renacimiento","Tomás Luis de Victoria","victoria"],
+  ["Carlo Gesualdo","Renacimiento","Carlo Gesualdo","gesualdo"],
+  ["Fryderyk Chopin","Romántico","Frédéric Chopin","chopin"],
+  ["Franz Schubert","Romántico","Franz Schubert","schubert"],
+  ["Robert Schumann","Romántico","Robert Schumann","schumann"],
+  ["Johannes Brahms","Romántico","Johannes Brahms","brahms"],
+  ["P. I. Chaikovski","Romántico","Pyotr Ilyich Tchaikovsky","tchaikovsky|chaikovsk"],
+  ["Franz Liszt","Romántico","Franz Liszt","liszt"],
+  ["Felix Mendelssohn","Romántico","Felix Mendelssohn","mendelssohn"],
+  ["Antonín Dvořák","Romántico","Antonín Dvořák","dvo"],
+  ["Sergéi Rachmaninov","Romántico","Sergei Rachmaninoff","rachmaninoff"],
+  ["Edvard Grieg","Romántico","Edvard Grieg","grieg"],
+  ["Claude Debussy","Impresionismo","Claude Debussy","debussy"],
+  ["Erik Satie","Impresionismo","Erik Satie","satie"],
+  ["Maurice Ravel","Impresionismo","Maurice Ravel","ravel"],
+  ["Igor Stravinsky","Siglo XX","Igor Stravinsky","stravinsky"],
+  ["Serguéi Prokófiev","Siglo XX","Sergei Prokofiev","prokofiev"],
+  ["Dmitri Shostakóvich","Siglo XX","Dmitri Shostakovich","shostakovich"],
+  ["Béla Bartók","Siglo XX","Béla Bartók","bart"],
+  ["Arnold Schönberg","Siglo XX","Arnold Schoenberg","schoenberg|schönberg"],
+  ["Anton Webern","Siglo XX","Anton Webern","webern"],
+  ["George Gershwin","Siglo XX","George Gershwin","gershwin"],
+  ["Charles Ives","Siglo XX","Charles Ives","ives"],
+].forEach(([c,p,cat,ap]) => TABLA.push({ c, p, cat, ap:new RegExp(ap, "i") }));
+const COMPOSITORES = [...new Set([...OBRAS.map(o => o.c), ...TABLA.map(t => t.c)])];
+const RONDAS = 15; // obras por partida
+const AUTO = {};    // caché del catálogo automático, por categoría
+
+// ---------- UTILIDADES ----------
+const $ = id => document.getElementById(id);
+const shuffle = a => { a = [...a]; for (let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; };
+const FP = "https://commons.wikimedia.org/wiki/Special:FilePath/";
+const API = "https://commons.wikimedia.org/w/api.php";
+const AUDIO_EXT = /\.(ogg|oga|opus|mp3|flac|wav)$/i;
+const audio = $("audio");
+let state = { mode:null, queue:[], i:0, score:0, answered:false, current:null, triedSearch:false };
+
+// JSON de la API: primero fetch; si el navegador lo bloquea, reintenta con JSONP (etiqueta <script>)
+function jsonp(url) {
+  return new Promise((res, rej) => {
+    const cb = "cb" + Math.random().toString(36).slice(2);
+    const s = document.createElement("script");
+    const fin = () => { s.remove(); delete window[cb]; };
+    window[cb] = d => { fin(); res(d); };
+    s.onerror = () => { fin(); rej(new Error("Failed to fetch")); };
+    s.src = url.replace("&origin=*", "") + "&callback=" + cb;
+    document.head.appendChild(s);
+    setTimeout(() => { if (window[cb]) { fin(); rej(new Error("Failed to fetch")); } }, 8000);
+  });
+}
+async function getJSON(url) {
+  try { return await (await fetch(url)).json(); }
+  catch { return await jsonp(url); }
+}
+
+// MD5 (para calcular la ruta directa en upload.wikimedia.org)
+function md5(s){
+ const b=new TextEncoder().encode(s);
+ const K=[],S=[7,12,17,22,5,9,14,20,4,11,16,23,6,10,15,21];
+ for(let i=0;i<64;i++)K[i]=Math.floor(Math.abs(Math.sin(i+1))*4294967296)>>>0;
+ const n=b.length,len=(((n+8)>>6)+1)<<4,w=new Uint32Array(len);
+ for(let i=0;i<n;i++)w[i>>2]|=b[i]<<((i%4)*8);
+ w[n>>2]|=0x80<<((n%4)*8);w[len-2]=(n*8)>>>0;w[len-1]=Math.floor(n*8/4294967296);
+ let a0=0x67452301,b0=0xefcdab89,c0=0x98badcfe,d0=0x10325476;
+ for(let o=0;o<len;o+=16){let A=a0,B=b0,C=c0,D=d0;
+  for(let i=0;i<64;i++){let F,g;
+   if(i<16){F=(B&C)|(~B&D);g=i}else if(i<32){F=(D&B)|(~D&C);g=(5*i+1)%16}else if(i<48){F=B^C^D;g=(3*i+5)%16}else{F=C^(B|~D);g=(7*i)%16}
+   F=(F+A+K[i]+w[o+g])>>>0;A=D;D=C;C=B;const sh=S[(i>>4)*4+(i%4)];B=(B+((F<<sh)|(F>>>(32-sh))))>>>0;}
+  a0=(a0+A)>>>0;b0=(b0+B)>>>0;c0=(c0+C)>>>0;d0=(d0+D)>>>0;}
+ const hex=v=>[0,8,16,24].map(x=>((v>>>x)&255).toString(16).padStart(2,'0')).join('');
+ return hex(a0)+hex(b0)+hex(c0)+hex(d0);}
+
+// Intentos de carga por orden: ruta directa (sin API ni redirección) y Special:FilePath
+function candidatas(nombre) {
+  const n = nombre.replace(/ /g, "_"), h = md5(n);
+  return [`https://upload.wikimedia.org/wikipedia/commons/${h[0]}/${h.slice(0,2)}/${encodeURIComponent(n)}`, FP + encodeURIComponent(n)];
+}
+function probar() {
+  const u = (state.cands || []).shift();
+  if (!u) return false;
+  audio.src = u; return true;
+}
+
+async function buscar(w) {
+  const url = `${API}?action=query&list=search&srnamespace=6&srlimit=15&format=json&origin=*&srsearch=${encodeURIComponent(w.q + " filetype:audio")}`;
+  const d = await getJSON(url);
+  const cand = (d.query?.search || []).map(x => x.title.replace(/^File:/, ""))
+    .filter(n => AUDIO_EXT.test(n) && w.must.test(n) && !malo(n)).slice(0, 8);
+  if (!cand.length) return null;
+  const m = await metaMala(cand);
+  return cand.find(n => !m.has(n)) || null;
+}
+
+// ---------- JUEGO ----------
+const MALOS = /interview|lecture|spoken|pronunciation|speech|talk|entrevista|accordion|accordeon|acordeon|acordeón|akkordeon|fisarmonic|harmonika/i; // incluye orquestas de acordeones
+// Nombres que delatan MIDI, fragmentos sueltos o grabaciones históricas (78 rpm, antes de 1950)
+const CALIDAD_MALA = /midi|\bmid\b|synth|computer|sequenc|musescore|lilypond|noteworthy|garageband|opening|excerpt|example|sample|snippet|\bdemo\b|\b(18\d\d|19[0-4]\d)\b|columbia|victor\b|\bhmv\b|gramophone|phonograph|78 ?rpm|cylinder|edison|brunswick|\blx ?\d+|\bcax ?\d+|historical/i;
+// Lo mismo, pero buscado en la descripción y categorías del archivo en Commons
+const META_MALA = /midi|synthes|computer[- ]generated|sequenc|virtual instrument|musescore|lilypond|noteworthy|garageband|78 ?rpm|shellac|phonograph|gramophone|cylinder recording|historical recording|(18|19[0-4])\d\d (audio )?recordings?|recordings? (made )?(in|from) (18|19[0-4])\d\d/i;
+// Obras concretas reportadas (se suman a las que reportes con el botón del juego)
+const PATRONES_BLOQUEO = [/la notte/i];
+
+const LS_BLOQ = "adivinaBloqueadas";
+const leerBloq = () => { try { return JSON.parse(localStorage.getItem(LS_BLOQ)) || []; } catch { return []; } };
+const guardarBloq = a => { try { localStorage.setItem(LS_BLOQ, JSON.stringify(a)); } catch {} };
+let BLOQ = leerBloq();
+const idDe = w => w.file || w.url || w.obra;
+const reportada = n => BLOQ.some(b => b.id === n || b.archivo === n);
+const malo = n => { n = n.replace(/^File:/, ""); return MALOS.test(n) || CALIDAD_MALA.test(n) || PATRONES_BLOQUEO.some(r => r.test(n)) || reportada(n); };
+
+async function metaMala(nombres) {
+  const malos = new Set();
+  for (let i = 0; i < nombres.length; i += 40) {
+    const lote = nombres.slice(i, i + 40);
+    try {
+      const u = `${API}?action=query&format=json&origin=*&prop=imageinfo&iiprop=extmetadata&iiextmetadatafilter=${encodeURIComponent("ImageDescription|Categories|ObjectName")}&titles=${encodeURIComponent(lote.map(n => "File:" + n).join("|"))}`;
+      const d = await getJSON(u);
+      Object.values(d.query?.pages || {}).forEach(pg => {
+        const em = pg.imageinfo?.[0]?.extmetadata || {};
+        const txt = [em.ImageDescription?.value, em.Categories?.value, em.ObjectName?.value].join(" ").replace(/<[^>]+>/g, " ");
+        if (META_MALA.test(txt)) malos.add((pg.title || "").replace(/^File:/, ""));
+      });
+    } catch {} // si falla la consulta, no se descarta nada
+  }
+  return malos;
+}
+
+const miembros = async cat => {
+  const u = `${API}?action=query&list=categorymembers&cmtitle=${encodeURIComponent("Category:" + cat)}&cmtype=${encodeURIComponent("file|subcat")}&cmlimit=100&format=json&origin=*`;
+  return (await getJSON(u)).query?.categorymembers || [];
+};
+function limpiar(nombre, t) {
+  const partes = nombre.replace(AUDIO_EXT, "").replace(/_/g, " ").split(/\s[-–]\s/).map(x => x.trim()).filter(Boolean);
+  if (partes.length > 1 && t.ap.test(partes[0]) && partes[0].length < 40) partes.shift();
+  return partes.join(" — ") || nombre;
+}
+async function cargarAuto(rango) {
+  const out = [];
+  await Promise.allSettled(TABLA.filter(t => rango.includes(t.p)).map(async t => {
+    if (!AUTO[t.cat]) {
+      const m = await miembros("Audio files of music by " + t.cat);
+      let nombres = m.filter(x => x.ns === 6).map(x => x.title);
+      const subs = shuffle(m.filter(x => x.ns === 14)).slice(0, 3);
+      const extra = await Promise.allSettled(subs.map(x => miembros(x.title.replace(/^Category:/, ""))));
+      extra.forEach(r => { if (r.status === "fulfilled") nombres.push(...r.value.filter(x => x.ns === 6).map(x => x.title)); });
+      nombres = [...new Set(nombres.map(n => n.replace(/^File:/, "")))].filter(n => AUDIO_EXT.test(n) && !malo(n));
+      const lote = shuffle(nombres).slice(0, 15);
+      const malosMeta = await metaMala(lote);
+      AUTO[t.cat] = lote.filter(n => !malosMeta.has(n));
+    }
+    shuffle(AUTO[t.cat].filter(n => !reportada(n))).slice(0, 4).forEach(n => out.push({ c:t.c, p:t.p, obra:limpiar(n, t), file:n, auto:true }));
+  }));
+  return out;
+}
+
+// Arma las rondas: en periodo se equilibra por periodo; en los demás, al azar
+function armarCola(pool, mode, rango) {
+  if (mode !== "periodo") return shuffle(pool).slice(0, RONDAS);
+  const n = Math.ceil(RONDAS / rango.length);
+  const por = per => shuffle(pool.filter(o => o.p === per)).slice(0, n);
+  return shuffle(rango.flatMap(por)).slice(0, RONDAS);
+}
+
+function rango() {
+  return PERIODOS.slice(+$("desde").value, +$("hasta").value + 1);
+}
+
+async function start(mode) {
+  const r = rango();
+  if (mode === "periodo" && r.length < 2) return;
+  const est = $("estado"); est.textContent = "Cargando catálogo…";
+  let pool = OBRAS.filter(o => r.includes(o.p)), aviso = "";
+  try {
+    await getJSON(`${API}?action=query&meta=siteinfo&format=json&origin=*`);
+    // El modo obra usa solo la lista curada (títulos limpios); los demás suman el catálogo automático
+    if (mode !== "obra") {
+      const auto = await cargarAuto(r);
+      const usados = new Set(OBRAS.flatMap(o => [o.file, o.url]).filter(Boolean));
+      pool = [...pool, ...auto.filter(o => !usados.has(o.file))];
+    }
+  } catch {
+    pool = pool.filter(o => o.file || o.url);
+    aviso = `La API de Commons está bloqueada en tu navegador, así que se juega solo con ${pool.length} obras de nombre verificado.`;
+  }
+  pool = pool.filter(o => !BLOQ.some(b => b.id === idDe(o)));
+  est.textContent = "";
+  if (!pool.length) { est.textContent = "No hay obras disponibles en ese rango de periodos."; return; }
+  const compPool = [...new Set([...OBRAS, ...TABLA].filter(o => r.includes(o.p)).map(o => o.c))];
+  state = { mode, rango:r, compPool, queue: armarCola(pool, mode, r), i:0, score:0, answered:false, current:null, triedSearch:false };
+  $("titulo").textContent = TITULOS[mode];
+  $("menu").classList.add("hidden"); $("end").classList.add("hidden"); $("game").classList.remove("hidden");
+  ronda();
+  if (aviso) { $("err").textContent = aviso; $("err").classList.remove("hidden"); }
+}
+
+function opcionesPara(w) {
+  if (state.mode === "periodo") {
+    const r = state.rango;
+    let ops;
+    if (r.length >= 4) {
+      ops = [w.p, ...shuffle(r.filter(p => p !== w.p)).slice(0, 3)];
+    } else {
+      // Rango corto: se completan 4 opciones con los periodos vecinos (nunca son la respuesta)
+      const i0 = PERIODOS.indexOf(r[0]), i1 = PERIODOS.indexOf(r[r.length - 1]);
+      const dist = p => { const i = PERIODOS.indexOf(p); return i < i0 ? i0 - i : i - i1; };
+      const fuera = PERIODOS.filter(p => !r.includes(p)).sort((a, b) => dist(a) - dist(b));
+      ops = [...r, ...fuera.slice(0, 4 - r.length)];
+    }
+    return { correcta: w.p, opciones: ops.sort((a, b) => PERIODOS.indexOf(a) - PERIODOS.indexOf(b)) };
+  }
+  if (state.mode === "compositor") {
+    const dentro = state.compPool.filter(c => c !== w.c);
+    const resto = COMPOSITORES.filter(c => c !== w.c && !dentro.includes(c));
+    const d = [...shuffle(dentro), ...shuffle(resto)].slice(0, 3);
+    return { correcta: w.c, opciones: shuffle([w.c, ...d]) };
+  }
+  const base = OBRAS.filter(o => o.obra !== w.obra);
+  const dentro = base.filter(o => state.rango.includes(o.p)), fuera = base.filter(o => !state.rango.includes(o.p));
+  const d = [...shuffle(dentro), ...shuffle(fuera)].slice(0, 3).map(o => o.obra);
+  return { correcta: w.obra, opciones: shuffle([w.obra, ...d]) };
+}
+
+async function ronda() {
+  const w = state.queue[state.i];
+  state.current = w; state.answered = false; state.triedSearch = false;
+  audio.pause(); $("fill").style.width = "0"; $("play").textContent = "▶";
+  $("err").classList.add("hidden"); $("reveal").classList.add("hidden");
+  $("report").textContent = "⚠ Reportar obra"; state.archivo = w.file || null;
+  $("progress").textContent = `Obra ${state.i+1} de ${state.queue.length}`;
+  $("score").textContent = `Puntos: ${state.score}`;
+
+  const { correcta, opciones } = opcionesPara(w);
+
+  $("opts").innerHTML = "";
+  opciones.forEach(o => {
+    const b = document.createElement("button");
+    b.dataset.valor = o;
+    b.textContent = o;
+    if (state.mode === "obra") {
+      // En el modo obra, cada alternativa muestra también su compositor
+      const comp = OBRAS.find(x => x.obra === o)?.c;
+      if (comp) {
+        const sm = document.createElement("small");
+        sm.textContent = comp;
+        b.append(document.createElement("br"), sm);
+      }
+    }
+    b.onclick = () => responder(b, o, correcta);
+    $("opts").appendChild(b);
+  });
+
+  if (w.file) {
+    state.cands = candidatas(w.file);
+    probar();
+  } else if (w.url) {
+    state.cands = [w.url];
+    probar();
+  } else {
+    await cargarPorBusqueda(w);
+  }
+}
+
+async function cargarPorBusqueda(w) {
+  state.triedSearch = true;
+  try {
+    const nombre = await buscar(w);
+    if (!nombre) throw new Error("la búsqueda en Commons no devolvió un archivo válido");
+    if (state.current !== w) return;
+    state.archivo = nombre;
+    state.cands = candidatas(nombre);
+    probar();
+  } catch (e) {
+    if (/no devolvió/.test(e.message) && state.current === w) {
+      // Sin archivo fiable en Commons: se omite la obra para no mostrar un título dudoso
+      state.queue.splice(state.i, 1);
+      if (state.i >= state.queue.length) return fin();
+      return ronda();
+    }
+    falloAudio(e.message === "Failed to fetch" ? "la API de Commons está bloqueada (¿Shields?)" : e.message);
+  }
+}
+
+function saltarActual() {
+  state.queue.splice(state.i, 1);
+  if (state.i >= state.queue.length) return state.queue.length ? fin() : falloAudio("no hay obras disponibles");
+  ronda();
+}
+
+function falloAudio(motivo) {
+  const codigos = { 1:"carga abortada", 2:"error de red / bloqueado", 3:"error al decodificar", 4:"formato o URL no válidos" };
+  const e = audio.error ? `${codigos[audio.error.code] || audio.error.code}` : (motivo || "sin detalle");
+  $("err").textContent = `No se pudo cargar el audio (${e}). URL: ${audio.currentSrc || audio.src || "ninguna"}`;
+  $("err").classList.remove("hidden");
+  if (!$("skip")) {
+    const s = document.createElement("button"); s.id = "skip"; s.textContent = "Saltar obra →";
+    s.onclick = () => { state.queue.splice(state.i, 1); state.i--; siguiente(); };
+    $("err").after(s);
+  }
+}
+
+audio.addEventListener("error", () => {
+  if (!audio.getAttribute("src")) return;
+  if (probar()) return;
+  const w = state.current;
+  if (w && (w.auto || w.sinBusqueda)) return saltarActual(); // obra del catálogo automático sin audio: se omite
+  if (!state.triedSearch && w) cargarPorBusqueda(w); else falloAudio();
+});
+audio.addEventListener("loadedmetadata", () => { const sk = $("skip"); if (sk) sk.remove(); $("err").classList.add("hidden"); });
+audio.addEventListener("timeupdate", () => {
+  const t = audio.currentTime;
+  $("fill").style.width = Math.min(100, t / CLIP * 100) + "%";
+  if (t >= CLIP) { audio.pause(); $("play").textContent = "↺"; }
+});
+audio.addEventListener("ended", () => $("play").textContent = "↺");
+
+$("play").onclick = () => {
+  if (!audio.paused) { audio.pause(); $("play").textContent = "▶"; return; }
+  if (audio.currentTime >= CLIP || audio.ended) audio.currentTime = 0;
+  audio.play().then(() => $("play").textContent = "❚❚").catch(() => {});
+};
+
+function responder(btn, elegida, correcta) {
+  if (state.answered) return;
+  state.answered = true;
+  const w = state.current;
+  const ok = elegida === correcta;
+  if (ok) state.score++;
+  [...$("opts").children].forEach(b => {
+    b.disabled = true;
+    if (b.dataset.valor === correcta) b.classList.add("ok");
+  });
+  if (!ok) btn.classList.add("bad");
+  $("score").textContent = `Puntos: ${state.score}`;
+  $("reveal").innerHTML = `${ok ? "✅ ¡Correcto!" : "❌ Incorrecto."}<br><strong>${w.c}</strong> — ${w.obra}<br><em>Periodo: ${w.p}</em>
+    <button class="primary" id="next">${state.i + 1 < state.queue.length ? "Siguiente →" : "Ver resultado"}</button>`;
+  $("reveal").classList.remove("hidden");
+  $("next").onclick = siguiente;
+}
+
+function siguiente() {
+  audio.pause();
+  const sk = $("skip"); if (sk) sk.remove();
+  state.i++;
+  if (state.i >= state.queue.length) return fin();
+  ronda();
+}
+
+function fin() {
+  $("game").classList.add("hidden"); $("end").classList.remove("hidden");
+  const n = state.queue.length;
+  $("final").textContent = `${state.score} / ${n}`;
+  $("finalTxt").textContent = state.score / n > .8 ? "¡Oído de concertino!" : state.score / n > .5 ? "Muy buen oído." : "A seguir escuchando.";
+}
+
+PERIODOS.forEach((p, i) => {
+  $("desde").add(new Option(p, i)); $("hasta").add(new Option(p, i));
+});
+$("desde").value = 1; $("hasta").value = 3; // por defecto: Barroco → Clásico
+function actualizarMenu() {
+  const r = rango(), ok = r.length >= 2;
+  document.querySelector('[data-mode="periodo"]').disabled = !ok;
+  $("avisoRango").textContent = ok
+    ? `Rango: ${r[0]} → ${r[r.length - 1]} (${r.length} periodos)`
+    : "Para adivinar el periodo/estilo elige al menos 2 periodos distintos.";
+}
+$("desde").onchange = () => { if (+$("hasta").value < +$("desde").value) $("hasta").value = $("desde").value; actualizarMenu(); };
+$("hasta").onchange = () => { if (+$("desde").value > +$("hasta").value) $("desde").value = $("hasta").value; actualizarMenu(); };
+actualizarMenu();
+document.querySelectorAll("[data-mode]").forEach(b => b.onclick = () => start(b.dataset.mode));
+function renderReportes() {
+  $("nrep").textContent = BLOQ.length;
+  $("listaRep").value = BLOQ.map(b => `${b.c} — ${b.obra} [${b.p}]${b.archivo ? " · " + b.archivo : ""}`).join("\n");
+}
+$("report").onclick = () => {
+  const w = state.current; if (!w) return;
+  BLOQ.push({ id: idDe(w), archivo: state.archivo || w.file || "", c: w.c, obra: w.obra, p: w.p });
+  guardarBloq(BLOQ); renderReportes();
+  $("report").textContent = "⚠ Reportada ✓";
+  if (!state.answered) saltarActual();
+};
+$("borrarRep").onclick = () => { BLOQ = []; guardarBloq(BLOQ); renderReportes(); };
+renderReportes();
+$("back").onclick = () => { renderReportes();
+  // Sale de la partida a mitad de camino y vuelve al menú
+  audio.pause(); audio.removeAttribute("src");
+  state.current = null; state.cands = [];
+  const sk = $("skip"); if (sk) sk.remove();
+  $("err").classList.add("hidden");
+  $("titulo").textContent = TITULO_MENU;
+  $("game").classList.add("hidden"); $("end").classList.add("hidden"); $("menu").classList.remove("hidden");
+};
+$("again").onclick = () => { $("titulo").textContent = TITULO_MENU; $("end").classList.add("hidden"); $("menu").classList.remove("hidden"); };
+</script>
+</body>
+</html>
